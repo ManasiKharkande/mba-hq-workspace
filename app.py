@@ -2,8 +2,14 @@ import streamlit as st
 import google.generativeai as genai
 from datetime import datetime
 
-# 1. Plug in your free Google AI Brain key
-GOOGLE_API_KEY = ""  # Put your key here!
+# 1. Setup Master Keys & Security Passwords
+MASTER_PASSWORD = "HUSTLE"  # 👈 Set whatever shared password you want here!
+
+if "GEMINI_KEY" in st.secrets:
+    GOOGLE_API_KEY = st.secrets["GEMINI_KEY"]
+else:
+    GOOGLE_API_KEY = "YOUR_SECRET_GEMINI_KEY_HERE"  # Keep your key here for local testing
+
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # 2. Page Configuration
@@ -13,7 +19,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Initialize Databases (Notion-style memory structures)
+# 3. Initialize Databases
 if "custom_pages" not in st.session_state:
     st.session_state.custom_pages = ["📬 Master Feed & Scheduler"]
 if "page_logs" not in st.session_state:
@@ -21,7 +27,6 @@ if "page_logs" not in st.session_state:
 if "page_notes" not in st.session_state:
     st.session_state.page_notes = {"📬 Master Feed & Scheduler": []}
 
-# Smart Memory Logic for Project Board
 if "project_tasks" not in st.session_state or len(st.session_state.project_tasks) == 0:
     if "project_tasks" not in st.session_state:
         st.session_state.project_tasks = [
@@ -30,7 +35,6 @@ if "project_tasks" not in st.session_state or len(st.session_state.project_tasks
             {"title": "Operations Management Framework Review", "priority": "🟢 Low", "status": "✅ Done"}
         ]
 
-# Helper function to generate a downloadable .ics calendar file string
 def create_ics_file(summary, description="Parsed by MBA Copilot"):
     current_year = datetime.now().year
     ics_string = f"""BEGIN:VCALENDAR
@@ -46,14 +50,27 @@ END:VCALENDAR"""
     return ics_string
 
 # ==========================================
-# 4. SIDEBAR MENU & STUCK-PROOF PAGE CREATOR
+# 4. SIDEBAR MENU & GATEKEEPER
 # ==========================================
 with st.sidebar:
     st.header("⚡ MBA HQ")
     st.caption("Your central schedule alignment & note command.")
     st.markdown("---")
     
-    # Navigation Selector
+    # Password Gate Input Box
+    user_password = st.text_input("🔑 Enter Access Password:", type="password", placeholder="Ask admin for access")
+    
+    if user_password != MASTER_PASSWORD:
+        st.warning("Please enter the correct workspace password in the box above to unlock your pages.")
+        st.markdown("---")
+        st.info("🔒 Secured via Group Workspace Protocol.")
+        # Stops the script right here so unauthorized users see absolutely nothing below this
+        st.stop()
+        
+    st.success("🔓 Access Granted!")
+    st.markdown("---")
+    
+    # Navigation Selector (Only shows up if password matches!)
     all_available_pages = st.session_state.custom_pages + ["📋 Project Board Tracker"]
     page = st.radio("Go to App/Workspace Page:", all_available_pages)
     
@@ -73,20 +90,17 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    
-    # 🎭 Focus & Energy Modulator Widget
     st.subheader("🔋 Energy Level")
     energy_score = st.slider("Set your current study vibe:", 1, 3, 2, format="", help="1=Exhausted, 2=Steady Focus, 3=High Energy")
     vibe_mapping = {1: "☕ Chill/Bite-sized", 2: "💼 Professional/Direct", 3: "🔥 Elite/Ultra-Productive"}
     st.caption(f"Current Vibe Mode: **{vibe_mapping[energy_score]}**")
 
 # ==========================================
-# DYNAMIC WORKSPACE PAGES (FEED TRACKER LOGIC)
+# DYNAMIC WORKSPACE PAGES
 # ==========================================
 if page in st.session_state.custom_pages:
     st.title(f"{page}")
     
-    # Live KPI Counter Cards
     total_parsed = sum(len(logs) for logs in st.session_state.page_logs.values())
     todo_count = sum(1 for t in st.session_state.project_tasks if t["status"] == "📋 To Do")
     high_priority_todo = sum(1 for t in st.session_state.project_tasks if t["status"] == "📋 To Do" and t["priority"] == "🔴 High")
@@ -97,7 +111,7 @@ if page in st.session_state.custom_pages:
     metric_col3.metric("🧠 Total AI-Parsed Announcements", f"{total_parsed} Logs")
     
     if high_priority_todo > 0:
-        st.error(f"⚠️ **Urgent Action Required:** You have **{high_priority_todo} High Priority** task(s) languishing in your Project Board's 'To Do' column!")
+        st.error(f"⚠️ **Urgent Action Required:** You have **{high_priority_todo} High Priority** task(s) languishing in your Project Board!")
     else:
         st.success("🎉 **Schedule Cleared:** No high-priority items are currently blocked.")
         
@@ -109,20 +123,13 @@ if page in st.session_state.custom_pages:
         st.subheader("📥 Log New Information")
         log_type = st.selectbox("What format is this?", ["📆 Chaotic Schedule/Announcement", "📝 Quick Class Note"], key=f"log_type_{page}")
         
-        # 🎨 OPTION 2 & 3: Color choices and formatting cheat sheet instructions
         color_choice = "🔵 Blue"
         if log_type == "📝 Quick Class Note":
             color_choice = st.selectbox("Choose Note Highlight Color:", ["🔵 Blue", "🟢 Emerald", "🟡 Amber", "🔴 Crimson"], key=f"color_{page}")
             st.caption("💡 **Formatting Tips:** Use `# Your Heading` for headings, or `* Item` for bullet points.")
         
-        # 🧹 OPTION 4: Wrapped in an explicit form with clear_on_submit=True to clear out inputs on click
         with st.form(key=f"input_form_{page}", clear_on_submit=True):
-            raw_text = st.text_area(
-                label="Input Content Box",
-                placeholder="Paste updates or type formatting notes here...",
-                height=150,
-                label_visibility="collapsed"
-            )
+            raw_text = st.text_area(label="Input Content Box", placeholder="Paste updates or type formatting notes here...", height=150, label_visibility="collapsed")
             save_button = st.form_submit_button("🚀 Push to Page Database", type="primary")
         
         if save_button and raw_text:
@@ -169,7 +176,6 @@ if page in st.session_state.custom_pages:
             if not st.session_state.page_logs[page]:
                 st.info("No timeline events parsed on this page yet.")
             else:
-                # 🛠️ OPTION 1: Add provisions to modify or delete logs
                 for idx, item in enumerate(st.session_state.page_logs[page]):
                     with st.container():
                         st.caption(f"Logged at {item['time']}")
@@ -196,11 +202,10 @@ if page in st.session_state.custom_pages:
             if not st.session_state.page_notes[page]:
                 st.info("Your notebook is blank for this section.")
             else:
-                color_map = {"🔵 Blue": "info", "...": "info", "🟢 Emerald": "success", "🟡 Amber": "warning", "🔴 Crimson": "error"}
+                color_map = {"🔵 Blue": "info", "🟢 Emerald": "success", "🟡 Amber": "warning", "🔴 Crimson": "error"}
                 for idx, note in enumerate(st.session_state.page_notes[page]):
                     chosen_banner = color_map.get(note.get('color', '🔵 Blue'), 'info')
                     
-                    # Renders rich text formatting (headings, bullets) inside a clean color callout box
                     with st.container():
                         if chosen_banner == "success": st.success(f"🕒 **{note['time']}**\n\n{note['content']}")
                         elif chosen_banner == "warning": st.warning(f"🕒 **{note['time']}**\n\n{note['content']}")
@@ -225,10 +230,9 @@ if page in st.session_state.custom_pages:
 # ==========================================
 elif page == "📋 Project Board Tracker":
     st.title("📋 Master Project & Case Study Board")
-    st.write("Track your heavy deliverables by dragging status dropdowns. Moving items changes your dashboard alert banner dynamically!")
+    st.write("Track your heavy deliverables by dragging status dropdowns.")
     st.markdown("---")
     
-    # 🧹 OPTION 4: Clear on submit handles the new task creation block automatically
     with st.expander("➕ Create New Project Task / Deadline"):
         with st.form(key="new_task_form", clear_on_submit=True):
             new_task_title = st.text_input("Task/Case Study Title:")
@@ -246,7 +250,6 @@ elif page == "📋 Project Board Tracker":
     st.markdown("### 🗺️ Project Board Columns")
     b_col1, b_col2, b_col3 = st.columns(3)
     
-    # Shared board renderer helper loop to inject edit/delete control panels smoothly across headers
     def render_board_column(column_title, target_status, layout_column, border_color):
         with layout_column:
             st.markdown(f"### {column_title}")
@@ -256,7 +259,6 @@ elif page == "📋 Project Board Tracker":
                         st.markdown(f"**{task['title']}**")
                         st.caption(f"Priority: {task['priority']}")
                         
-                        # Move tracking dropdown
                         avail_statuses = ["📋 To Do", "⚡ In Progress", "✅ Done"]
                         curr_idx = avail_statuses.index(target_status)
                         new_status = st.selectbox("Move status:", avail_statuses, key=f"status_{target_status}_{idx}", index=curr_idx)
@@ -264,7 +266,6 @@ elif page == "📋 Project Board Tracker":
                             task["status"] = new_status
                             st.rerun()
                         
-                        # 🛠️ OPTION 1: Inline modify or delete configurations inside board elements
                         task_edit, task_del = st.columns(2)
                         with task_edit:
                             with st.expander("✏️ Rename"):
