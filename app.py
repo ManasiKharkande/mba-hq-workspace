@@ -3,7 +3,7 @@ import google.generativeai as genai
 from datetime import datetime
 
 # 1. Plug in your free Google AI Brain key
-GOOGLE_API_KEY = "AIzaSyDwIgVF1MPhe_KG6Q84N1u5uu34l5I6HLo"  # Put your key here!
+GOOGLE_API_KEY = ""  # Put your key here!
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # 2. Page Configuration
