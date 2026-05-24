@@ -229,7 +229,7 @@ if page in st.session_state.custom_pages:
 # PAGE 2: INTERACTIVE PROJECT BOARD
 # ==========================================
 elif page == "📋 Project Board Tracker":
-    st.title("📋 Master Project & Case Study Board")
+    st.title("📋 Project & Case Study Board")
     st.write("Track your heavy deliverables by dragging status dropdowns.")
     st.markdown("---")
     
