@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import json
 import os
+import gspread
+from google.oauth2.service_account import Credentials
 
 # 1. Setup Master AI Keys
 if "GEMINI_KEY" in st.secrets:
@@ -21,42 +23,87 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Securely Connect to Your Google Sheet Database
-if os.path.exists("google_creds.json"):
-    with open("google_creds.json", "r") as f:
-        crections_dict = json.load(f)
-    
-    sheet_url = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
-    if not sheet_url:
-        sheet_url = "PASTE_YOUR_GOOGLE_SHEET_URL_HERE" 
-        
-    crections_dict["spreadsheet"] = sheet_url
-    conn = st.connection("gsheets", type=GSheetsConnection, **crections_dict)
-else:
-    conn = st.connection("gsheets", type=GSheetsConnection)
+# 3. Securely Connect to Your Google Sheet Database via Raw Gspread Client
+SHEET_URL = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
+if not SHEET_URL:
+    # Hardcoded fallback if your secrets box ever clears out accidentally
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/your-actual-sheet-link-here/edit?usp=sharing"
 
-# --- DATABASE HELPER FUNCTIONS ---
+@st.cache_resource
+def get_gc_client():
+    if os.path.exists("google_creds.json"):
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_file("google_creds.json", scopes=scopes)
+        return gspread.authorize(creds)
+    return None
+
+gc = get_gc_client()
+
+# --- REWRITTEN DIRECT-WRITE HELPER FUNCTIONS ---
 def get_user_data():
     try:
-        df = conn.read(worksheet="Users", ttl="0d")
-        return df.dropna(how="all")
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Users")
+            return pd.DataFrame(worksheet.get_all_records())
     except Exception as e:
         st.error(f"Error reading Users tab: {e}")
-        return pd.DataFrame(columns=["username", "password"])
+    return pd.DataFrame(columns=["username", "password"])
+
+def write_user_data(df):
+    try:
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Users")
+            worksheet.clear()
+            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+            return True
+    except Exception as e:
+        st.error(f"Error writing to Users tab: {e}")
+    return False
 
 def get_tasks_data():
     try:
-        df = conn.read(worksheet="Tasks", ttl="0d")
-        return df.dropna(how="all")
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Tasks")
+            return pd.DataFrame(worksheet.get_all_records())
     except:
-        return pd.DataFrame(columns=["username", "title", "priority", "status"])
+        pass
+    return pd.DataFrame(columns=["username", "title", "priority", "status"])
+
+def write_tasks_data(df):
+    try:
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Tasks")
+            worksheet.clear()
+            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+    except Exception as e:
+        st.error(f"Error writing to Tasks tab: {e}")
 
 def get_notes_data():
     try:
-        df = conn.read(worksheet="Notes", ttl="0d")
-        return df.dropna(how="all")
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Notes")
+            return pd.DataFrame(worksheet.get_all_records())
     except:
-        return pd.DataFrame(columns=["username", "page", "time", "content", "color"])
+        pass
+    return pd.DataFrame(columns=["username", "page", "time", "content", "color"])
+
+def write_notes_data(df):
+    try:
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Notes")
+            worksheet.clear()
+            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+    except Exception as e:
+        st.error(f"Error writing to Notes tab: {e}")
 
 # ==========================================
 # 4. SIGN-IN & REGISTRATION SYSTEM
@@ -78,10 +125,14 @@ if st.session_state.logged_in_user is None:
         
         if input_user and input_pass:
             users_df = get_user_data()
-            user_exists = input_user in users_df["username"].values
+            
+            if not users_df.empty and "username" in users_df.columns:
+                user_exists = input_user in users_df["username"].astype(str).values
+            else:
+                user_exists = False
             
             if user_exists:
-                correct_pass = str(users_df[users_df["username"] == input_user]["password"].values[0])
+                correct_pass = str(users_df[users_df["username"].astype(str) == input_user]["password"].values[0])
                 if input_pass == correct_pass:
                     if st.button("🔓 Log In", type="primary", use_container_width=True):
                         st.session_state.logged_in_user = input_user
@@ -93,9 +144,9 @@ if st.session_state.logged_in_user is None:
                 if st.button("✨ Register New Account", type="primary", use_container_width=True):
                     new_user_row = pd.DataFrame([{"username": input_user, "password": input_pass}])
                     updated_users = pd.concat([users_df, new_user_row], ignore_index=True)
-                    conn.update(worksheet="Users", data=updated_users)
-                    st.success("🎉 Registration successful! Click 'Log In' above to access your space.")
-                    st.rerun()
+                    if write_user_data(updated_users):
+                        st.success("🎉 Registration successful! Click 'Log In' above to access your space.")
+                        st.rerun()
                     
     with col_info:
         st.info("""
@@ -112,14 +163,20 @@ if st.session_state.logged_in_user is None:
 current_user = st.session_state.logged_in_user
 
 all_tasks = get_tasks_data()
-user_tasks = all_tasks[all_tasks["username"] == current_user].to_dict('records')
+if not all_tasks.empty and "username" in all_tasks.columns:
+    user_tasks = all_tasks[all_tasks["username"] == current_user].to_dict('records')
+else:
+    user_tasks = []
 
 all_notes = get_notes_data()
-user_notes = all_notes[all_notes["username"] == current_user].to_dict('records')
+if not all_notes.empty and "username" in all_notes.columns:
+    user_notes = all_notes[all_notes["username"] == current_user].to_dict('records')
+else:
+    user_notes = []
 
 user_pages = ["📬 Master Feed & Scheduler"]
 for note in user_notes:
-    if note["page"] not in user_pages:
+    if note.get("page") and note["page"] not in user_pages:
         user_pages.append(note["page"])
 
 with st.sidebar:
@@ -149,7 +206,7 @@ with st.sidebar:
                     "content": "🚀 Welcome to your new dynamic page canvas!", "color": "🔵 Blue"
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                conn.update(worksheet="Notes", data=updated_notes)
+                write_notes_data(updated_notes)
                 st.rerun()
 
     st.markdown("---")
@@ -164,8 +221,8 @@ with st.sidebar:
 if page in user_pages:
     st.title(f"{page}")
     
-    todo_count = sum(1 for t in user_tasks if t["status"] == "📋 To Do")
-    high_priority_todo = sum(1 for t in user_tasks if t["status"] == "📋 To Do" and t["priority"] == "🔴 High")
+    todo_count = sum(1 for t in user_tasks if t.get("status") == "📋 To Do")
+    high_priority_todo = sum(1 for t in user_tasks if t.get("status") == "📋 To Do" and t.get("priority") == "🔴 High")
     
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     metric_col1.metric("📂 Custom Workspace Pages", f"{len(user_pages)} Modules")
@@ -212,7 +269,7 @@ if page in user_pages:
                             "content": response.text, "color": "🔵 Blue"
                         }])
                         updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                        conn.update(worksheet="Notes", data=updated_notes)
+                        write_notes_data(updated_notes)
                         st.toast("AI Parsed and Synced!")
                         st.rerun()
                     except Exception as e:
@@ -224,13 +281,13 @@ if page in user_pages:
                     "content": raw_text, "color": color_choice
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                conn.update(worksheet="Notes", data=updated_notes)
+                write_notes_data(updated_notes)
                 st.toast("Note secured to Cloud Google Sheet!")
                 st.rerun()
 
     with col2:
         st.subheader("📚 Saved Notebook & Timeline Logs")
-        current_page_notes = [n for n in user_notes if n["page"] == page]
+        current_page_notes = [n for n in user_notes if n.get("page") == page]
         
         if not current_page_notes:
             st.info("Your notebook is blank for this section.")
@@ -248,7 +305,7 @@ if page in user_pages:
                     if st.button("🗑️ Delete Item", key=f"del_note_{page}_{idx}"):
                         actual_idx = all_notes[(all_notes["username"] == current_user) & (all_notes["page"] == page) & (all_notes["content"] == note["content"])].index[-1]
                         all_notes = all_notes.drop(actual_idx)
-                        conn.update(worksheet="Notes", data=all_notes)
+                        write_notes_data(all_notes)
                         st.rerun()
                     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -272,17 +329,18 @@ elif page == "📋 Project Board Tracker":
                     "priority": new_task_priority, "status": "📋 To Do"
                 }])
                 updated_tasks = pd.concat([all_tasks, new_task_row], ignore_index=True)
-                conn.update(worksheet="Tasks", data=updated_tasks)
+                write_tasks_data(updated_tasks)
                 st.rerun()
     
     st.markdown("### 🗺️ Project Board Columns")
     b_col1, b_col2, b_col3 = st.columns(3)
     
     def render_board_column(column_title, target_status, layout_column):
+        global all_tasks
         with layout_column:
             st.markdown(f"### {column_title}")
             for idx, task in enumerate(user_tasks):
-                if task["status"] == target_status:
+                if task.get("status") == target_status:
                     with st.container():
                         st.markdown(f"**{task['title']}**")
                         st.caption(f"Priority: {task['priority']}")
@@ -294,13 +352,13 @@ elif page == "📋 Project Board Tracker":
                         if new_status != task["status"]:
                             master_idx = all_tasks[(all_tasks["username"] == current_user) & (all_tasks["title"] == task["title"])].index[-1]
                             all_tasks.at[master_idx, "status"] = new_status
-                            conn.update(worksheet="Tasks", data=all_tasks)
+                            write_tasks_data(all_tasks)
                             st.rerun()
                         
                         if st.button("🗑️ Drop Task", key=f"drop_{target_status}_{idx}", use_container_width=True):
                             master_idx = all_tasks[(all_tasks["username"] == current_user) & (all_tasks["title"] == task["title"])].index[-1]
                             all_tasks = all_tasks.drop(master_idx)
-                            conn.update(worksheet="Tasks", data=all_tasks)
+                            write_tasks_data(all_tasks)
                             st.rerun()
                         st.markdown("---")
 
