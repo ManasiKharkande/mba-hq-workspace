@@ -3,13 +3,14 @@ import google.generativeai as genai
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
+import json
+import os
 
-# 1. Setup Master API Keys (Safely pulling from Streamlit Secrets vault)
+# 1. Setup Master AI Keys
 if "GEMINI_KEY" in st.secrets:
     GOOGLE_API_KEY = st.secrets["GEMINI_KEY"]
 else:
-    # Safe fallback placeholder so your public key is never leaked on GitHub
-    GOOGLE_API_KEY = "PASTE_YOUR_KEY_HERE_ONLY_WHEN_TESTING_ON_YOUR_LAPTOP"
+    GOOGLE_API_KEY = "YOUR_FALLBACK_KEY"
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
@@ -21,14 +22,26 @@ st.set_page_config(
 )
 
 # 3. Securely Connect to Your Google Sheet Database
-conn = st.connection("gsheets", type=GSheetsConnection)
+if os.path.exists("google_creds.json"):
+    with open("google_creds.json", "r") as f:
+        crections_dict = json.load(f)
+    
+    sheet_url = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
+    if not sheet_url:
+        sheet_url = "PASTE_YOUR_GOOGLE_SHEET_URL_HERE" 
+        
+    crections_dict["spreadsheet"] = sheet_url
+    conn = st.connection("gsheets", type=GSheetsConnection, **crections_dict)
+else:
+    conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- DATABASE HELPER FUNCTIONS ---
 def get_user_data():
     try:
         df = conn.read(worksheet="Users", ttl="0d")
         return df.dropna(how="all")
-    except:
+    except Exception as e:
+        st.error(f"Error reading Users tab: {e}")
         return pd.DataFrame(columns=["username", "password"])
 
 def get_tasks_data():
@@ -65,7 +78,6 @@ if st.session_state.logged_in_user is None:
         
         if input_user and input_pass:
             users_df = get_user_data()
-            
             user_exists = input_user in users_df["username"].values
             
             if user_exists:
@@ -110,20 +122,6 @@ for note in user_notes:
     if note["page"] not in user_pages:
         user_pages.append(note["page"])
 
-def create_ics_file(summary, description="Parsed by MBA Copilot"):
-    current_year = datetime.now().year
-    ics_string = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//MBA HQ Copilot//Config 1.0//EN
-BEGIN:VEVENT
-SUMMARY:{summary}
-DESCRIPTION:{description}
-DTSTART:{current_year}0901T100000Z
-DTEND:{current_year}0901T110000Z
-END:VEVENT
-END:VCALENDAR"""
-    return ics_string
-
 with st.sidebar:
     st.header("⚡ MBA HQ")
     st.caption(f"👤 Logged in as: **{current_user}**")
@@ -133,7 +131,6 @@ with st.sidebar:
         st.rerun()
         
     st.markdown("---")
-    
     all_available_pages = user_pages + ["📋 Project Board Tracker"]
     page = st.radio("Go to App/Workspace Page:", all_available_pages)
     
@@ -181,7 +178,6 @@ if page in user_pages:
         st.success("🎉 **Schedule Cleared:** No high-priority items are currently blocked.")
         
     st.markdown("---")
-    
     col1, col2 = st.columns([1, 1.2])
     
     with col1:
