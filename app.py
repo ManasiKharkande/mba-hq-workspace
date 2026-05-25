@@ -25,7 +25,7 @@ st.set_page_config(
 # 3. Securely Connect to Your Google Sheet Database via Raw Gspread Client
 SHEET_URL = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
 if not SHEET_URL:
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/your-actual-sheet-link-here/edit?usp=sharing"
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
 
 @st.cache_resource
 def get_gc_client():
