@@ -24,8 +24,9 @@ st.set_page_config(
 
 # 3. Securely Connect to Your Google Sheet Database via Raw Gspread Client
 SHEET_URL = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
-if not SHEET_URL:
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
+if not SHEET_URL or "your-actual-sheet-link" in SHEET_URL:
+    # 🔴 PASTE YOUR ACTUAL GOOGLE SHEET URL HERE IF NOT SET IN STREAMLIT SECRETS
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/your-actual-sheet-link-here/edit?usp=sharing"
 
 @st.cache_resource
 def get_gc_client():
@@ -60,7 +61,6 @@ def save_sheet_data(worksheet_name, df):
             sh = gc.open_by_url(SHEET_URL)
             worksheet = sh.worksheet(worksheet_name)
             worksheet.clear()
-            # Convert dataframe to nested lists including headers
             data_to_write = [df.columns.values.tolist()] + df.fillna("").astype(str).values.tolist()
             worksheet.update(data_to_write)
             return True
@@ -69,62 +69,14 @@ def save_sheet_data(worksheet_name, df):
     return False
 
 # ==========================================
-# 4. SIGN-IN & REGISTRATION SYSTEM
+# 4. BYPASS AUTHENTICATION (DEFAULT USER)
 # ==========================================
-if "logged_in_user" not in st.session_state:
-    st.session_state.logged_in_user = None
-
-if st.session_state.logged_in_user is None:
-    st.title("⚡ Welcome to MBA HQ Workspace")
-    st.write("A cloud-synced, AI-assisted central dashboard for your tasks and notes.")
-    st.markdown("---")
-    
-    col_login, col_info = st.columns([1, 1.2])
-    
-    with col_login:
-        st.subheader("🔑 Account Authentication")
-        input_user = st.text_input("Username / Email:", placeholder="Enter your name or email").strip().lower()
-        input_pass = st.text_input("Password:", type="password", placeholder="Enter your password")
-        
-        if input_user and input_pass:
-            users_df = get_sheet_data("Users", ["username", "password"])
-            
-            if not users_df.empty and "username" in users_df.columns:
-                user_exists = input_user in users_df["username"].astype(str).values
-            else:
-                user_exists = False
-            
-            if user_exists:
-                correct_pass = str(users_df[users_df["username"].astype(str) == input_user]["password"].values[0])
-                if input_pass == correct_pass:
-                    if st.button("🔓 Log In", type="primary", use_container_width=True):
-                        st.session_state.logged_in_user = input_user
-                        st.rerun()
-                else:
-                    st.error("❌ Incorrect password. Please try again.")
-            else:
-                st.info("ℹ️ This username doesn't exist yet. Would you like to register it?")
-                if st.button("✨ Register New Account", type="primary", use_container_width=True):
-                    new_user_row = pd.DataFrame([{"username": input_user, "password": input_pass}])
-                    updated_users = pd.concat([users_df, new_user_row], ignore_index=True)
-                    if save_sheet_data("Users", updated_users):
-                        st.success("🎉 Registration successful! Click 'Log In' above to access your space.")
-                        st.rerun()
-                    
-    with col_info:
-        st.info("""
-        ### 🚀 Features Included:
-        * **Permanent Device Cloud Sync:** Add items on your laptop, look at them on your mobile phone instantly.
-        * **Personalized Dashboard:** Your workspace items are kept completely secure and isolated from other users.
-        * **AI Fast Parsing Engine:** Instantly convert disorganized schedule text into structured action-items.
-        """)
-    st.stop()
+# Authentication is removed. Defaulting to a seamless workspace session.
+current_user = "guest_user"
 
 # ==========================================
-# 5. AUTHENTICATED SINGLE-USER RUN ENVIRONMENT
+# 5. WORKSPACE RUN ENVIRONMENT
 # ==========================================
-current_user = st.session_state.logged_in_user
-
 all_tasks = get_sheet_data("Tasks", ["username", "title", "priority", "status"])
 if not all_tasks.empty and "username" in all_tasks.columns:
     user_tasks = all_tasks[all_tasks["username"] == current_user].to_dict('records')
@@ -144,13 +96,9 @@ for note in user_notes:
 
 with st.sidebar:
     st.header("⚡ MBA HQ")
-    st.caption(f"👤 Logged in as: **{current_user}**")
-    
-    if st.button("🚪 Sign Out", use_container_width=True):
-        st.session_state.logged_in_user = None
-        st.rerun()
-        
+    st.caption(f"👤 Session Mode: **Open Workspace**")
     st.markdown("---")
+    
     all_available_pages = user_pages + ["📋 Project Board Tracker"]
     page = st.radio("Go to App/Workspace Page:", all_available_pages)
     
