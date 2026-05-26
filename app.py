@@ -22,20 +22,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# 3. Securely Connect to Your Google Sheet Database via Raw Gspread Client
-SHEET_URL = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
-if not SHEET_URL or "your-actual-sheet-link" in SHEET_URL:
-    # 🔴 PASTE YOUR ACTUAL GOOGLE SHEET URL HERE IF NOT SET IN STREAMLIT SECRETS
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
+# 3. Securely Connect to Your Google Sheet Database via Secrets TOML
+# 🔴 PASTE YOUR ACTUAL GOOGLE SHEET URL HERE
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
 
 @st.cache_resource
 def get_gc_client():
-    if os.path.exists("google_creds.json"):
+    # Reads directly from the [google_creds] section you just saved in Secrets!
+    if "google_creds" in st.secrets:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        creds = Credentials.from_service_account_file("google_creds.json", scopes=scopes)
+        creds_dict = dict(st.secrets["google_creds"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
     return None
 
@@ -98,7 +98,6 @@ if st.session_state.logged_in_user is None:
         input_pass = st.text_input("Password:", type="password", placeholder="Enter password")
         
         if input_user and input_pass:
-            # Load users data to check credentials
             users_df = get_sheet_data("Users", ["username", "password"])
             
             if not users_df.empty and "username" in users_df.columns:
@@ -107,7 +106,6 @@ if st.session_state.logged_in_user is None:
                 user_exists = False
                 
             if user_exists:
-                # User exists -> Show Log In Button
                 correct_pass = str(users_df[users_df["username"].astype(str) == input_user]["password"].values[0])
                 if input_pass == correct_pass:
                     if st.button("🔓 Enter Workspace", type="primary", use_container_width=True):
@@ -117,7 +115,6 @@ if st.session_state.logged_in_user is None:
                 else:
                     st.error("❌ Incorrect password. Please try again.")
             else:
-                # User does not exist -> Show Registration Option
                 st.info("ℹ️ This username isn't registered yet. Create it below:")
                 if st.button("✨ Register & Setup Account", type="primary", use_container_width=True):
                     with st.spinner("Provisioning secure workspace rows..."):
