@@ -26,7 +26,7 @@ st.set_page_config(
 SHEET_URL = st.secrets.get("connections", {}).get("gsheets", {}).get("spreadsheet", "")
 if not SHEET_URL or "your-actual-sheet-link" in SHEET_URL:
     # 🔴 PASTE YOUR ACTUAL GOOGLE SHEET URL HERE IF NOT SET IN STREAMLIT SECRETS
-    SHEET_URL = "https://docs.google.com/spreadsheets/d/your-actual-sheet-link-here/edit?usp=sharing"
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
 
 @st.cache_resource
 def get_gc_client():
@@ -55,6 +55,17 @@ def get_sheet_data(worksheet_name, fallback_cols):
         st.error(f"Error reading {worksheet_name}: {e}")
     return pd.DataFrame(columns=fallback_cols)
 
+def append_user_to_sheet(username, password):
+    try:
+        if gc:
+            sh = gc.open_by_url(SHEET_URL)
+            worksheet = sh.worksheet("Users")
+            worksheet.append_row([username, password])
+            return True
+    except Exception as e:
+        st.error(f"Failed to add user to Google Sheet: {e}")
+    return False
+
 def save_sheet_data(worksheet_name, df):
     try:
         if gc:
@@ -69,14 +80,67 @@ def save_sheet_data(worksheet_name, df):
     return False
 
 # ==========================================
-# 4. BYPASS AUTHENTICATION (DEFAULT USER)
+# 4. SIGN-IN & REGISTRATION INTERFACE
 # ==========================================
-# Authentication is removed. Defaulting to a seamless workspace session.
-current_user = "guest_user"
+if "logged_in_user" not in st.session_state:
+    st.session_state.logged_in_user = None
+
+if st.session_state.logged_in_user is None:
+    st.title("⚡ Welcome to MBA HQ Workspace")
+    st.write("Securely access your personal task dashboard and AI scheduling engine.")
+    st.markdown("---")
+    
+    col_login, col_info = st.columns([1, 1.2])
+    
+    with col_login:
+        st.subheader("🔑 Authentication Gate")
+        input_user = st.text_input("Username / Email:", placeholder="Enter your name or email").strip().lower()
+        input_pass = st.text_input("Password:", type="password", placeholder="Enter password")
+        
+        if input_user and input_pass:
+            # Load users data to check credentials
+            users_df = get_sheet_data("Users", ["username", "password"])
+            
+            if not users_df.empty and "username" in users_df.columns:
+                user_exists = input_user in users_df["username"].astype(str).values
+            else:
+                user_exists = False
+                
+            if user_exists:
+                # User exists -> Show Log In Button
+                correct_pass = str(users_df[users_df["username"].astype(str) == input_user]["password"].values[0])
+                if input_pass == correct_pass:
+                    if st.button("🔓 Enter Workspace", type="primary", use_container_width=True):
+                        st.session_state.logged_in_user = input_user
+                        st.success(f"Welcome back, {input_user}!")
+                        st.rerun()
+                else:
+                    st.error("❌ Incorrect password. Please try again.")
+            else:
+                # User does not exist -> Show Registration Option
+                st.info("ℹ️ This username isn't registered yet. Create it below:")
+                if st.button("✨ Register & Setup Account", type="primary", use_container_width=True):
+                    with st.spinner("Provisioning secure workspace rows..."):
+                        if append_user_to_sheet(input_user, input_pass):
+                            st.success("🎉 Account created successfully! Click 'Enter Workspace' above to start.")
+                            st.rerun()
+                        else:
+                            st.error("Failed to register. Please check your connection profile.")
+                            
+    with col_info:
+        st.info("""
+        ### 🚀 Secure Cloud Portal:
+        * **Cross-Device Syncing:** Your data logs directly into your Google Sheets, making it readable from anywhere.
+        * **Isolated User States:** Users only view items matched to their specific username profile.
+        * **Automated AI Parsing:** Turn unstructured chat announcements into real-time tracking deadlines.
+        """)
+    st.stop()
 
 # ==========================================
-# 5. WORKSPACE RUN ENVIRONMENT
+# 5. AUTHENTICATED SINGLE-USER RUN ENVIRONMENT
 # ==========================================
+current_user = st.session_state.logged_in_user
+
 all_tasks = get_sheet_data("Tasks", ["username", "title", "priority", "status"])
 if not all_tasks.empty and "username" in all_tasks.columns:
     user_tasks = all_tasks[all_tasks["username"] == current_user].to_dict('records')
@@ -96,9 +160,13 @@ for note in user_notes:
 
 with st.sidebar:
     st.header("⚡ MBA HQ")
-    st.caption(f"👤 Session Mode: **Open Workspace**")
-    st.markdown("---")
+    st.caption(f"👤 Logged in as: **{current_user}**")
     
+    if st.button("🚪 Sign Out", use_container_width=True):
+        st.session_state.logged_in_user = None
+        st.rerun()
+        
+    st.markdown("---")
     all_available_pages = user_pages + ["📋 Project Board Tracker"]
     page = st.radio("Go to App/Workspace Page:", all_available_pages)
     
@@ -106,7 +174,7 @@ with st.sidebar:
     st.subheader("🛠️ Workspace Engine")
     
     with st.form("page_creator_form", clear_on_submit=True):
-        new_page_name = st.text_input("New Page Name:", placeholder="e.g., Loan Tracker, Placement Prep")
+        new_page_name = st.text_input("New Page Name:", placeholder="e.g., Placement Prep")
         submit_create = st.form_submit_button("➕ Create Page", use_container_width=True)
         
         if submit_create and new_page_name:
