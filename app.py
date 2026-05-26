@@ -28,7 +28,6 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp
 
 @st.cache_resource
 def get_gc_client():
-    # Reads directly from the [google_creds] section you just saved in Secrets!
     if "google_creds" in st.secrets:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -60,10 +59,21 @@ def append_user_to_sheet(username, password):
         if gc:
             sh = gc.open_by_url(SHEET_URL)
             worksheet = sh.worksheet("Users")
-            worksheet.append_row([username, password])
+            # Read current data safely to prevent structural drops
+            records = worksheet.get_all_records()
+            df = pd.DataFrame(records) if records else pd.DataFrame(columns=["username", "password"])
+            
+            # Create the new user row
+            new_user = pd.DataFrame([{"username": str(username), "password": str(password)}])
+            updated_df = pd.concat([df, new_user], ignore_index=True)
+            
+            # Clear grid and force a complete data overwrite block
+            worksheet.clear()
+            data_to_write = [updated_df.columns.values.tolist()] + updated_df.fillna("").astype(str).values.tolist()
+            worksheet.update(data_to_write)
             return True
     except Exception as e:
-        st.error(f"Failed to add user to Google Sheet: {e}")
+        st.error(f"Google Overwrite Error: {e}")
     return False
 
 def save_sheet_data(worksheet_name, df):
