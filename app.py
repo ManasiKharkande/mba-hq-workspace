@@ -23,7 +23,6 @@ st.set_page_config(
 )
 
 # 3. Securely Connect to Your Google Sheet Database via Secrets TOML
-# 🔴 PASTE YOUR ACTUAL GOOGLE SHEET URL HERE
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
 
 @st.cache_resource
@@ -40,7 +39,7 @@ def get_gc_client():
 
 gc = get_gc_client()
 
-# --- BULLETPROOF DATA WRITE HELPERS ---
+# --- ULTRA-ROBUST DIRECT API METHODS ---
 def get_sheet_data(worksheet_name, fallback_cols):
     try:
         if gc:
@@ -59,21 +58,13 @@ def append_user_to_sheet(username, password):
         if gc:
             sh = gc.open_by_url(SHEET_URL)
             worksheet = sh.worksheet("Users")
-            # Read current data safely to prevent structural drops
-            records = worksheet.get_all_records()
-            df = pd.DataFrame(records) if records else pd.DataFrame(columns=["username", "password"])
             
-            # Create the new user row
-            new_user = pd.DataFrame([{"username": str(username), "password": str(password)}])
-            updated_df = pd.concat([df, new_user], ignore_index=True)
-            
-            # Clear grid and force a complete data overwrite block
-            worksheet.clear()
-            data_to_write = [updated_df.columns.values.tolist()] + updated_df.fillna("").astype(str).values.tolist()
-            worksheet.update(data_to_write)
+            # Direct API Appending (Bypasses pandas and sheet clearing entirely)
+            row_to_add = [str(username), str(password)]
+            worksheet.append_row(row_to_add, value_input_option="USER_ENTERED")
             return True
     except Exception as e:
-        st.error(f"Google Overwrite Error: {e}")
+        st.error(f"Google API Direct Append Error: {e}")
     return False
 
 def save_sheet_data(worksheet_name, df):
@@ -81,12 +72,18 @@ def save_sheet_data(worksheet_name, df):
         if gc:
             sh = gc.open_by_url(SHEET_URL)
             worksheet = sh.worksheet(worksheet_name)
+            
+            # Format matrix data cleanly
+            headers = df.columns.values.tolist()
+            matrix = df.fillna("").astype(str).values.tolist()
+            payload = [headers] + matrix
+            
+            # Use raw value range clear and update instead of worksheet.clear()
             worksheet.clear()
-            data_to_write = [df.columns.values.tolist()] + df.fillna("").astype(str).values.tolist()
-            worksheet.update(data_to_write)
+            worksheet.update(payload)
             return True
     except Exception as e:
-        st.error(f"Database Write Error on {worksheet_name}: {e}")
+        st.error(f"Direct Table Overwrite Error on {worksheet_name}: {e}")
     return False
 
 # ==========================================
@@ -127,12 +124,12 @@ if st.session_state.logged_in_user is None:
             else:
                 st.info("ℹ️ This username isn't registered yet. Create it below:")
                 if st.button("✨ Register & Setup Account", type="primary", use_container_width=True):
-                    with st.spinner("Provisioning secure workspace rows..."):
+                    with st.spinner("Writing credentials securely..."):
                         if append_user_to_sheet(input_user, input_pass):
-                            st.success("🎉 Account created successfully! Click 'Enter Workspace' above to start.")
+                            st.success("🎉 Account created successfully! Click inside the forms or refresh to log in.")
                             st.rerun()
                         else:
-                            st.error("Failed to register. Please check your connection profile.")
+                            st.error("Failed to execute registry command.")
                             
     with col_info:
         st.info("""
