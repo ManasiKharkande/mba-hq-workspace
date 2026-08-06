@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 from datetime import datetime
-import json
 import os
 import gspread
 from google.oauth2.service_account import Credentials
@@ -53,32 +52,16 @@ def get_sheet_data(worksheet_name, fallback_cols):
         st.error(f"Error reading {worksheet_name}: {e}")
     return pd.DataFrame(columns=fallback_cols)
 
-def append_user_to_sheet(username, password):
-    try:
-        if gc:
-            sh = gc.open_by_url(SHEET_URL)
-            worksheet = sh.worksheet("Users")
-            
-            # Direct API Appending (Bypasses pandas and sheet clearing entirely)
-            row_to_add = [str(username), str(password)]
-            worksheet.append_row(row_to_add, value_input_option="USER_ENTERED")
-            return True
-    except Exception as e:
-        st.error(f"Google API Direct Append Error: {e}")
-    return False
-
 def save_sheet_data(worksheet_name, df):
     try:
         if gc:
             sh = gc.open_by_url(SHEET_URL)
             worksheet = sh.worksheet(worksheet_name)
             
-            # Format matrix data cleanly
             headers = df.columns.values.tolist()
             matrix = df.fillna("").astype(str).values.tolist()
             payload = [headers] + matrix
             
-            # Use raw value range clear and update instead of worksheet.clear()
             worksheet.clear()
             worksheet.update(payload)
             return True
@@ -87,90 +70,27 @@ def save_sheet_data(worksheet_name, df):
     return False
 
 # ==========================================
-# 4. SIGN-IN & REGISTRATION INTERFACE
+# 4. LOAD GLOBAL WORKSPACE DATA
 # ==========================================
-if "logged_in_user" not in st.session_state:
-    st.session_state.logged_in_user = None
+all_tasks = get_sheet_data("Tasks", ["title", "priority", "status"])
+user_tasks = all_tasks.to_dict('records') if not all_tasks.empty else []
 
-if st.session_state.logged_in_user is None:
-    st.title("⚡ Welcome to MBA HQ Workspace")
-    st.write("Securely access your personal task dashboard and AI scheduling engine.")
-    st.markdown("---")
-    
-    col_login, col_info = st.columns([1, 1.2])
-    
-    with col_login:
-        st.subheader("🔑 Authentication Gate")
-        input_user = st.text_input("Username / Email:", placeholder="Enter your name or email").strip().lower()
-        input_pass = st.text_input("Password:", type="password", placeholder="Enter password")
-        
-        if input_user and input_pass:
-            users_df = get_sheet_data("Users", ["username", "password"])
-            
-            if not users_df.empty and "username" in users_df.columns:
-                user_exists = input_user in users_df["username"].astype(str).values
-            else:
-                user_exists = False
-                
-            if user_exists:
-                correct_pass = str(users_df[users_df["username"].astype(str) == input_user]["password"].values[0])
-                if input_pass == correct_pass:
-                    if st.button("🔓 Enter Workspace", type="primary", use_container_width=True):
-                        st.session_state.logged_in_user = input_user
-                        st.success(f"Welcome back, {input_user}!")
-                        st.rerun()
-                else:
-                    st.error("❌ Incorrect password. Please try again.")
-            else:
-                st.info("ℹ️ This username isn't registered yet. Create it below:")
-                if st.button("✨ Register & Setup Account", type="primary", use_container_width=True):
-                    with st.spinner("Writing credentials securely..."):
-                        if append_user_to_sheet(input_user, input_pass):
-                            st.success("🎉 Account created successfully! Click inside the forms or refresh to log in.")
-                            st.rerun()
-                        else:
-                            st.error("Failed to execute registry command.")
-                            
-    with col_info:
-        st.info("""
-        ### 🚀 Secure Cloud Portal:
-        * **Cross-Device Syncing:** Your data logs directly into your Google Sheets, making it readable from anywhere.
-        * **Isolated User States:** Users only view items matched to their specific username profile.
-        * **Automated AI Parsing:** Turn unstructured chat announcements into real-time tracking deadlines.
-        """)
-    st.stop()
-
-# ==========================================
-# 5. AUTHENTICATED SINGLE-USER RUN ENVIRONMENT
-# ==========================================
-current_user = st.session_state.logged_in_user
-
-all_tasks = get_sheet_data("Tasks", ["username", "title", "priority", "status"])
-if not all_tasks.empty and "username" in all_tasks.columns:
-    user_tasks = all_tasks[all_tasks["username"] == current_user].to_dict('records')
-else:
-    user_tasks = []
-
-all_notes = get_sheet_data("Notes", ["username", "page", "time", "content", "color"])
-if not all_notes.empty and "username" in all_notes.columns:
-    user_notes = all_notes[all_notes["username"] == current_user].to_dict('records')
-else:
-    user_notes = []
+all_notes = get_sheet_data("Notes", ["page", "time", "content", "color"])
+user_notes = all_notes.to_dict('records') if not all_notes.empty else []
 
 user_pages = ["📬 Master Feed & Scheduler"]
 for note in user_notes:
     if note.get("page") and note["page"] not in user_pages:
         user_pages.append(note["page"])
 
+# ==========================================
+# 5. SIDEBAR NAVIGATION & CREATOR
+# ==========================================
 with st.sidebar:
     st.header("⚡ MBA HQ")
-    st.caption(f"👤 Logged in as: **{current_user}**")
-    
-    if st.button("🚪 Sign Out", use_container_width=True):
-        st.session_state.logged_in_user = None
-        st.rerun()
-        
+    st.caption("🚀 Open Workspace Mode")
     st.markdown("---")
+    
     all_available_pages = user_pages + ["📋 Project Board Tracker"]
     page = st.radio("Go to App/Workspace Page:", all_available_pages)
     
@@ -185,8 +105,10 @@ with st.sidebar:
             clean_name = f"📄 {new_page_name.strip()}"
             if clean_name not in user_pages:
                 new_note_row = pd.DataFrame([{
-                    "username": current_user, "page": clean_name, "time": datetime.now().strftime("%b %d, %I:%M %p"),
-                    "content": "🚀 Welcome to your new dynamic page canvas!", "color": "🔵 Blue"
+                    "page": clean_name, 
+                    "time": datetime.now().strftime("%b %d, %I:%M %p"),
+                    "content": "🚀 Welcome to your new dynamic page canvas!", 
+                    "color": "🔵 Blue"
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
                 save_sheet_data("Notes", updated_notes)
@@ -248,8 +170,10 @@ if page in user_pages:
                         response = model.generate_content(prompt)
                         
                         new_note_row = pd.DataFrame([{
-                            "username": current_user, "page": page, "time": datetime.now().strftime("%I:%M %p"),
-                            "content": response.text, "color": "🔵 Blue"
+                            "page": page, 
+                            "time": datetime.now().strftime("%I:%M %p"),
+                            "content": response.text, 
+                            "color": "🔵 Blue"
                         }])
                         updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
                         save_sheet_data("Notes", updated_notes)
@@ -260,8 +184,10 @@ if page in user_pages:
             
             elif log_type == "📝 Quick Class Note":
                 new_note_row = pd.DataFrame([{
-                    "username": current_user, "page": page, "time": datetime.now().strftime("%b %d, %I:%M %p"),
-                    "content": raw_text, "color": color_choice
+                    "page": page, 
+                    "time": datetime.now().strftime("%b %d, %I:%M %p"),
+                    "content": raw_text, 
+                    "color": color_choice
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
                 save_sheet_data("Notes", updated_notes)
@@ -286,7 +212,7 @@ if page in user_pages:
                     else: st.info(f"🕒 **{note['time']}**\n\n{note['content']}")
                     
                     if st.button("🗑️ Delete Item", key=f"del_note_{page}_{idx}"):
-                        actual_idx = all_notes[(all_notes["username"] == current_user) & (all_notes["page"] == page) & (all_notes["content"] == note["content"])].index[-1]
+                        actual_idx = all_notes[(all_notes["page"] == page) & (all_notes["content"] == note["content"])].index[-1]
                         all_notes = all_notes.drop(actual_idx)
                         save_sheet_data("Notes", all_notes)
                         st.rerun()
@@ -308,8 +234,9 @@ elif page == "📋 Project Board Tracker":
             
             if submit_task and new_task_title:
                 new_task_row = pd.DataFrame([{
-                    "username": current_user, "title": new_task_title,
-                    "priority": new_task_priority, "status": "📋 To Do"
+                    "title": new_task_title,
+                    "priority": new_task_priority, 
+                    "status": "📋 To Do"
                 }])
                 updated_tasks = pd.concat([all_tasks, new_task_row], ignore_index=True)
                 save_sheet_data("Tasks", updated_tasks)
@@ -333,13 +260,13 @@ elif page == "📋 Project Board Tracker":
                         new_status = st.selectbox("Move status:", avail_statuses, key=f"status_{target_status}_{idx}", index=curr_idx)
                         
                         if new_status != task["status"]:
-                            master_idx = all_tasks[(all_tasks["username"] == current_user) & (all_tasks["title"] == task["title"])].index[-1]
+                            master_idx = all_tasks[all_tasks["title"] == task["title"]].index[-1]
                             all_tasks.at[master_idx, "status"] = new_status
                             save_sheet_data("Tasks", all_tasks)
                             st.rerun()
                         
                         if st.button("🗑️ Drop Task", key=f"drop_{target_status}_{idx}", use_container_width=True):
-                            master_idx = all_tasks[(all_tasks["username"] == current_user) & (all_tasks["title"] == task["title"])].index[-1]
+                            master_idx = all_tasks[all_tasks["title"] == task["title"]].index[-1]
                             all_tasks = all_tasks.drop(master_idx)
                             save_sheet_data("Tasks", all_tasks)
                             st.rerun()
