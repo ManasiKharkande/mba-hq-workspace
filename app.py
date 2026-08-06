@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import pandas as pd
 from datetime import datetime
-import os
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -39,34 +38,58 @@ def get_gc_client():
 gc = get_gc_client()
 
 # --- ULTRA-ROBUST DIRECT API METHODS ---
+def get_or_create_worksheet(sh, worksheet_name, fallback_cols):
+    """Helper to get a worksheet or create it if missing."""
+    try:
+        return sh.worksheet(worksheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title=worksheet_name, rows=100, cols=20)
+        worksheet.append_row(fallback_cols)
+        return worksheet
+
 def get_sheet_data(worksheet_name, fallback_cols):
     try:
         if gc:
             sh = gc.open_by_url(SHEET_URL)
-            worksheet = sh.worksheet(worksheet_name)
+            worksheet = get_or_create_worksheet(sh, worksheet_name, fallback_cols)
             records = worksheet.get_all_records()
+            
             if not records:
+                # If headers don't exist yet, write them
+                values = worksheet.get_all_values()
+                if not values:
+                    worksheet.append_row(fallback_cols)
                 return pd.DataFrame(columns=fallback_cols)
-            return pd.DataFrame(records)
+            
+            df = pd.DataFrame(records)
+            # Ensure all expected columns exist
+            for col in fallback_cols:
+                if col not in df.columns:
+                    df[col] = ""
+            return df
     except Exception as e:
-        st.error(f"Error reading {worksheet_name}: {e}")
+        st.error(f"Error reading worksheet '{worksheet_name}': {e}")
     return pd.DataFrame(columns=fallback_cols)
 
 def save_sheet_data(worksheet_name, df):
     try:
         if gc:
             sh = gc.open_by_url(SHEET_URL)
-            worksheet = sh.worksheet(worksheet_name)
+            worksheet = get_or_create_worksheet(sh, worksheet_name, df.columns.values.tolist())
             
             headers = df.columns.values.tolist()
             matrix = df.fillna("").astype(str).values.tolist()
             payload = [headers] + matrix
             
             worksheet.clear()
-            worksheet.update(payload)
+            # Compatible with both legacy and new gspread versions
+            try:
+                worksheet.update(range_name='A1', values=payload)
+            except TypeError:
+                worksheet.update('A1', payload)
             return True
     except Exception as e:
-        st.error(f"Direct Table Overwrite Error on {worksheet_name}: {e}")
+        st.error(f"Direct Table Overwrite Error on worksheet '{worksheet_name}': {e}")
     return False
 
 # ==========================================
@@ -80,8 +103,9 @@ user_notes = all_notes.to_dict('records') if not all_notes.empty else []
 
 user_pages = ["📬 Master Feed & Scheduler"]
 for note in user_notes:
-    if note.get("page") and note["page"] not in user_pages:
-        user_pages.append(note["page"])
+    page_val = str(note.get("page", "")).strip()
+    if page_val and page_val not in user_pages:
+        user_pages.append(page_val)
 
 # ==========================================
 # 5. SIDEBAR NAVIGATION & CREATOR
@@ -111,8 +135,9 @@ with st.sidebar:
                     "color": "🔵 Blue"
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                save_sheet_data("Notes", updated_notes)
-                st.rerun()
+                if save_sheet_data("Notes", updated_notes):
+                    st.toast(f"Page '{clean_name}' created successfully!")
+                    st.rerun()
 
     st.markdown("---")
     st.subheader("🔋 Energy Level")
@@ -166,7 +191,7 @@ if page in user_pages:
                         Line 2: A short bullet point specifying the venue/location or any immediate action items.
                         Text: "{raw_text}"
                         """
-                        model = genai.GenerativeModel('gemini-3.5-flash')
+                        model = genai.GenerativeModel('gemini-1.5-flash')
                         response = model.generate_content(prompt)
                         
                         new_note_row = pd.DataFrame([{
@@ -176,11 +201,11 @@ if page in user_pages:
                             "color": "🔵 Blue"
                         }])
                         updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                        save_sheet_data("Notes", updated_notes)
-                        st.toast("AI Parsed and Synced!")
-                        st.rerun()
+                        if save_sheet_data("Notes", updated_notes):
+                            st.toast("AI Parsed and Synced!")
+                            st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error parsing schedule: {e}")
             
             elif log_type == "📝 Quick Class Note":
                 new_note_row = pd.DataFrame([{
@@ -190,9 +215,9 @@ if page in user_pages:
                     "color": color_choice
                 }])
                 updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                save_sheet_data("Notes", updated_notes)
-                st.toast("Note secured to Cloud Google Sheet!")
-                st.rerun()
+                if save_sheet_data("Notes", updated_notes):
+                    st.toast("Note secured to Cloud Google Sheet!")
+                    st.rerun()
 
     with col2:
         st.subheader("📚 Saved Notebook & Timeline Logs")
@@ -212,10 +237,11 @@ if page in user_pages:
                     else: st.info(f"🕒 **{note['time']}**\n\n{note['content']}")
                     
                     if st.button("🗑️ Delete Item", key=f"del_note_{page}_{idx}"):
-                        actual_idx = all_notes[(all_notes["page"] == page) & (all_notes["content"] == note["content"])].index[-1]
-                        all_notes = all_notes.drop(actual_idx)
-                        save_sheet_data("Notes", all_notes)
-                        st.rerun()
+                        matches = all_notes[(all_notes["page"] == page) & (all_notes["content"] == note["content"])].index
+                        if not matches.empty:
+                            all_notes = all_notes.drop(matches[-1])
+                            if save_sheet_data("Notes", all_notes):
+                                st.rerun()
                     st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
@@ -239,8 +265,8 @@ elif page == "📋 Project Board Tracker":
                     "status": "📋 To Do"
                 }])
                 updated_tasks = pd.concat([all_tasks, new_task_row], ignore_index=True)
-                save_sheet_data("Tasks", updated_tasks)
-                st.rerun()
+                if save_sheet_data("Tasks", updated_tasks):
+                    st.rerun()
     
     st.markdown("### 🗺️ Project Board Columns")
     b_col1, b_col2, b_col3 = st.columns(3)
@@ -256,20 +282,22 @@ elif page == "📋 Project Board Tracker":
                         st.caption(f"Priority: {task['priority']}")
                         
                         avail_statuses = ["📋 To Do", "⚡ In Progress", "✅ Done"]
-                        curr_idx = avail_statuses.index(target_status)
+                        curr_idx = avail_statuses.index(target_status) if target_status in avail_statuses else 0
                         new_status = st.selectbox("Move status:", avail_statuses, key=f"status_{target_status}_{idx}", index=curr_idx)
                         
                         if new_status != task["status"]:
-                            master_idx = all_tasks[all_tasks["title"] == task["title"]].index[-1]
-                            all_tasks.at[master_idx, "status"] = new_status
-                            save_sheet_data("Tasks", all_tasks)
-                            st.rerun()
+                            matches = all_tasks[all_tasks["title"] == task["title"]].index
+                            if not matches.empty:
+                                all_tasks.at[matches[-1], "status"] = new_status
+                                if save_sheet_data("Tasks", all_tasks):
+                                    st.rerun()
                         
                         if st.button("🗑️ Drop Task", key=f"drop_{target_status}_{idx}", use_container_width=True):
-                            master_idx = all_tasks[all_tasks["title"] == task["title"]].index[-1]
-                            all_tasks = all_tasks.drop(master_idx)
-                            save_sheet_data("Tasks", all_tasks)
-                            st.rerun()
+                            matches = all_tasks[all_tasks["title"] == task["title"]].index
+                            if not matches.empty:
+                                all_tasks = all_tasks.drop(matches[-1])
+                                if save_sheet_data("Tasks", all_tasks):
+                                    st.rerun()
                         st.markdown("---")
 
     render_board_column("🔴 TO DO", "📋 To Do", b_col1)
