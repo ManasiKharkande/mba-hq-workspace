@@ -1,123 +1,156 @@
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
+import sqlite3
 from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
 
-# 1. Setup Master AI Keys
-if "GEMINI_KEY" in st.secrets:
-    GOOGLE_API_KEY = st.secrets["GEMINI_KEY"]
-else:
-    GOOGLE_API_KEY = "YOUR_FALLBACK_KEY"
-
-genai.configure(api_key=GOOGLE_API_KEY)
-
-# 2. Page Configuration
+# ==========================================
+# 1. PAGE CONFIGURATION
+# ==========================================
 st.set_page_config(
     page_title="MBA HQ Workspace",
     page_icon="⚡",
     layout="wide"
 )
 
-# 3. Securely Connect to Your Google Sheet Database via Secrets TOML
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1516BWshyUPZlhQ1Oz4Epum3PQAp7hin81_eP3eERO0Q/edit?usp=sharing"
-
-@st.cache_resource
-def get_gc_client():
-    if "google_creds" in st.secrets:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds_dict = dict(st.secrets["google_creds"])
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
-    return None
-
-gc = get_gc_client()
-
-# --- ULTRA-ROBUST DIRECT API METHODS ---
-def get_or_create_worksheet(sh, worksheet_name, fallback_cols):
-    """Helper to get a worksheet or create it if missing."""
-    try:
-        return sh.worksheet(worksheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title=worksheet_name, rows=100, cols=20)
-        worksheet.append_row(fallback_cols)
-        return worksheet
-
-def get_sheet_data(worksheet_name, fallback_cols):
-    try:
-        if gc:
-            sh = gc.open_by_url(SHEET_URL)
-            worksheet = get_or_create_worksheet(sh, worksheet_name, fallback_cols)
-            records = worksheet.get_all_records()
-            
-            if not records:
-                # If headers don't exist yet, write them
-                values = worksheet.get_all_values()
-                if not values:
-                    worksheet.append_row(fallback_cols)
-                return pd.DataFrame(columns=fallback_cols)
-            
-            df = pd.DataFrame(records)
-            # Ensure all expected columns exist
-            for col in fallback_cols:
-                if col not in df.columns:
-                    df[col] = ""
-            return df
-    except Exception as e:
-        st.error(f"Error reading worksheet '{worksheet_name}': {e}")
-    return pd.DataFrame(columns=fallback_cols)
-
-def save_sheet_data(worksheet_name, df):
-    try:
-        if gc:
-            sh = gc.open_by_url(SHEET_URL)
-            worksheet = get_or_create_worksheet(sh, worksheet_name, df.columns.values.tolist())
-            
-            headers = df.columns.values.tolist()
-            matrix = df.fillna("").astype(str).values.tolist()
-            payload = [headers] + matrix
-            
-            worksheet.clear()
-            # Compatible with both legacy and new gspread versions
-            try:
-                worksheet.update(range_name='A1', values=payload)
-            except TypeError:
-                worksheet.update('A1', payload)
-            return True
-    except Exception as e:
-        st.error(f"Direct Table Overwrite Error on worksheet '{worksheet_name}': {e}")
-    return False
+# ==========================================
+# 2. SETUP GEMINI AI KEY SECURELY
+# ==========================================
+if "GEMINI_KEY" in st.secrets and st.secrets["GEMINI_KEY"]:
+    genai.configure(api_key=st.secrets["GEMINI_KEY"])
+    ai_enabled = True
+else:
+    ai_enabled = False
+    st.warning("⚠️ `GEMINI_KEY` not detected in Secrets. AI features will be disabled until configured.")
 
 # ==========================================
-# 4. LOAD GLOBAL WORKSPACE DATA
+# 3. AUTOMATIC SQLITE DATABASE ENGINE
 # ==========================================
-all_tasks = get_sheet_data("Tasks", ["title", "priority", "status"])
-user_tasks = all_tasks.to_dict('records') if not all_tasks.empty else []
+DB_FILE = "workspace.db"
 
-all_notes = get_sheet_data("Notes", ["page", "time", "content", "color"])
-user_notes = all_notes.to_dict('records') if not all_notes.empty else []
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-user_pages = ["📬 Master Feed & Scheduler"]
+def init_db():
+    """Automatically creates database and tables if they do not exist."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page TEXT NOT NULL,
+            time TEXT NOT NULL,
+            content TEXT NOT NULL,
+            color TEXT NOT NULL
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            status TEXT NOT NULL
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- DATABASE HELPER FUNCTIONS ---
+def load_notes():
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM notes", conn)
+    conn.close()
+    return df
+
+def load_tasks():
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM tasks", conn)
+    conn.close()
+    return df
+
+def add_note(page, time_str, content, color):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO notes (page, time, content, color) VALUES (?, ?, ?, ?)",
+                   (page, time_str, content, color))
+    conn.commit()
+    conn.close()
+
+def delete_note(note_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+
+def add_task(title, priority, status="📋 To Do"):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO tasks (title, priority, status) VALUES (?, ?, ?)",
+                   (title, priority, status))
+    conn.commit()
+    conn.close()
+
+def update_task_status(task_id, new_status):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (new_status, task_id))
+    conn.commit()
+    conn.close()
+
+def delete_task(task_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+# ==========================================
+# 4. LOAD WORKSPACE DATA
+# ==========================================
+df_notes = load_notes()
+df_tasks = load_tasks()
+
+user_notes = df_notes.to_dict('records') if not df_notes.empty else []
+user_tasks = df_tasks.to_dict('records') if not df_tasks.empty else []
+
+if "workspace_pages" not in st.session_state:
+    st.session_state.workspace_pages = ["📬 Master Feed & Scheduler"]
+
 for note in user_notes:
     page_val = str(note.get("page", "")).strip()
-    if page_val and page_val not in user_pages:
-        user_pages.append(page_val)
+    if page_val and page_val not in st.session_state.workspace_pages:
+        st.session_state.workspace_pages.append(page_val)
+
+if "current_page" not in st.session_state or st.session_state.current_page not in (st.session_state.workspace_pages + ["📋 Project Board Tracker"]):
+    st.session_state.current_page = st.session_state.workspace_pages[0]
 
 # ==========================================
-# 5. SIDEBAR NAVIGATION & CREATOR
+# 5. SIDEBAR NAVIGATION & PAGE CREATOR
 # ==========================================
 with st.sidebar:
     st.header("⚡ MBA HQ")
-    st.caption("🚀 Open Workspace Mode")
+    st.caption("🚀 Database Engine Active")
     st.markdown("---")
     
-    all_available_pages = user_pages + ["📋 Project Board Tracker"]
-    page = st.radio("Go to App/Workspace Page:", all_available_pages)
+    all_nav_options = st.session_state.workspace_pages + ["📋 Project Board Tracker"]
     
+    selected_nav = st.radio(
+        "Go to App/Workspace Page:", 
+        all_nav_options, 
+        index=all_nav_options.index(st.session_state.current_page) if st.session_state.current_page in all_nav_options else 0,
+        key="nav_radio"
+    )
+    st.session_state.current_page = selected_nav
+    page = st.session_state.current_page
+
     st.markdown("---")
     st.subheader("🛠️ Workspace Engine")
     
@@ -125,19 +158,26 @@ with st.sidebar:
         new_page_name = st.text_input("New Page Name:", placeholder="e.g., Placement Prep")
         submit_create = st.form_submit_button("➕ Create Page", use_container_width=True)
         
-        if submit_create and new_page_name:
-            clean_name = f"📄 {new_page_name.strip()}"
-            if clean_name not in user_pages:
-                new_note_row = pd.DataFrame([{
-                    "page": clean_name, 
-                    "time": datetime.now().strftime("%b %d, %I:%M %p"),
-                    "content": "🚀 Welcome to your new dynamic page canvas!", 
-                    "color": "🔵 Blue"
-                }])
-                updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                if save_sheet_data("Notes", updated_notes):
-                    st.toast(f"Page '{clean_name}' created successfully!")
+        if submit_create:
+            if new_page_name.strip():
+                clean_name = f"📄 {new_page_name.strip()}"
+                
+                if clean_name not in st.session_state.workspace_pages:
+                    st.session_state.workspace_pages.append(clean_name)
+                    st.session_state.current_page = clean_name
+                    
+                    add_note(
+                        page=clean_name,
+                        time_str=datetime.now().strftime("%b %d, %I:%M %p"),
+                        content="🚀 Welcome to your new dynamic page canvas!",
+                        color="🔵 Blue"
+                    )
+                    st.toast(f"Page '{clean_name}' created!")
                     st.rerun()
+                else:
+                    st.warning("That page name already exists.")
+            else:
+                st.warning("Please enter a valid page name.")
 
     st.markdown("---")
     st.subheader("🔋 Energy Level")
@@ -148,14 +188,14 @@ with st.sidebar:
 # ==========================================
 # 6. DYNAMIC WORKSPACE NOTEBOOK PAGES
 # ==========================================
-if page in user_pages:
+if page in st.session_state.workspace_pages:
     st.title(f"{page}")
     
     todo_count = sum(1 for t in user_tasks if t.get("status") == "📋 To Do")
     high_priority_todo = sum(1 for t in user_tasks if t.get("status") == "📋 To Do" and t.get("priority") == "🔴 High")
     
     metric_col1, metric_col2, metric_col3 = st.columns(3)
-    metric_col1.metric("📂 Custom Workspace Pages", f"{len(user_pages)} Modules")
+    metric_col1.metric("📂 Custom Workspace Pages", f"{len(st.session_state.workspace_pages)} Modules")
     metric_col2.metric("🎯 Tasks in To-Do", f"{todo_count} Deliverables")
     metric_col3.metric("📝 Saved Notebook Items", f"{len(user_notes)} Notes/Logs")
     
@@ -177,57 +217,46 @@ if page in user_pages:
         
         with st.form(key=f"input_form_{page}", clear_on_submit=True):
             raw_text = st.text_area(label="Input Content Box", placeholder="Type or paste information here...", height=150, label_visibility="collapsed")
-            save_button = st.form_submit_button("🚀 Push to Page Database", type="primary")
+            save_button = st.form_submit_button("🚀 Push to Database", type="primary")
         
         if save_button and raw_text:
             if log_type == "📆 Chaotic Schedule/Announcement":
-                with st.spinner("AI Agent is parsing..."):
-                    try:
-                        prompt = f"""
-                        You are an expert executive academic coordinator. Analyze the text below and extract the core details.
-                        Adopt a tone that matches this vibe: '{vibe_mapping[energy_score]}'.
-                        Provide your response strictly in exactly two clean markdown lines:
-                        Line 1: Start with an emoji. Bold title of the event or item, followed by any date/time.
-                        Line 2: A short bullet point specifying the venue/location or any immediate action items.
-                        Text: "{raw_text}"
-                        """
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        response = model.generate_content(prompt)
-                        
-                        new_note_row = pd.DataFrame([{
-                            "page": page, 
-                            "time": datetime.now().strftime("%I:%M %p"),
-                            "content": response.text, 
-                            "color": "🔵 Blue"
-                        }])
-                        updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                        if save_sheet_data("Notes", updated_notes):
+                if not ai_enabled:
+                    st.error("AI service is unconfigured. Set `GEMINI_KEY` in secrets.")
+                else:
+                    with st.spinner("AI Agent is parsing..."):
+                        try:
+                            prompt = f"""
+                            You are an expert executive academic coordinator. Analyze the text below and extract the core details.
+                            Adopt a tone that matches this vibe: '{vibe_mapping[energy_score]}'.
+                            Provide your response strictly in exactly two clean markdown lines:
+                            Line 1: Start with an emoji. Bold title of the event or item, followed by any date/time.
+                            Line 2: A short bullet point specifying the venue/location or any immediate action items.
+                            Text: "{raw_text}"
+                            """
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            response = model.generate_content(prompt)
+                            
+                            add_note(page, datetime.now().strftime("%I:%M %p"), response.text, "🔵 Blue")
                             st.toast("AI Parsed and Synced!")
                             st.rerun()
-                    except Exception as e:
-                        st.error(f"Error parsing schedule: {e}")
+                        except Exception as e:
+                            st.error(f"Error parsing schedule: {e}")
             
             elif log_type == "📝 Quick Class Note":
-                new_note_row = pd.DataFrame([{
-                    "page": page, 
-                    "time": datetime.now().strftime("%b %d, %I:%M %p"),
-                    "content": raw_text, 
-                    "color": color_choice
-                }])
-                updated_notes = pd.concat([all_notes, new_note_row], ignore_index=True)
-                if save_sheet_data("Notes", updated_notes):
-                    st.toast("Note secured to Cloud Google Sheet!")
-                    st.rerun()
+                add_note(page, datetime.now().strftime("%b %d, %I:%M %p"), raw_text, color_choice)
+                st.toast("Note secured to database!")
+                st.rerun()
 
     with col2:
         st.subheader("📚 Saved Notebook & Timeline Logs")
-        current_page_notes = [n for n in user_notes if n.get("page") == page]
+        current_page_notes = [n for n in user_notes if str(n.get("page", "")).strip() == page]
         
         if not current_page_notes:
             st.info("Your notebook is blank for this section.")
         else:
             color_map = {"🔵 Blue": "info", "🟢 Emerald": "success", "🟡 Amber": "warning", "🔴 Crimson": "error"}
-            for idx, note in enumerate(reversed(current_page_notes)):
+            for note in reversed(current_page_notes):
                 chosen_banner = color_map.get(note.get('color', '🔵 Blue'), 'info')
                 
                 with st.container():
@@ -236,20 +265,17 @@ if page in user_pages:
                     elif chosen_banner == "error": st.error(f"🕒 **{note['time']}**\n\n{note['content']}")
                     else: st.info(f"🕒 **{note['time']}**\n\n{note['content']}")
                     
-                    if st.button("🗑️ Delete Item", key=f"del_note_{page}_{idx}"):
-                        matches = all_notes[(all_notes["page"] == page) & (all_notes["content"] == note["content"])].index
-                        if not matches.empty:
-                            all_notes = all_notes.drop(matches[-1])
-                            if save_sheet_data("Notes", all_notes):
-                                st.rerun()
+                    if st.button("🗑️ Delete Item", key=f"del_note_{note['id']}"):
+                        delete_note(note['id'])
+                        st.rerun()
                     st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. INTERACTIVE CLOUD PROJECT BOARD
+# 7. INTERACTIVE PROJECT BOARD TRACKER
 # ==========================================
 elif page == "📋 Project Board Tracker":
-    st.title("📋 Cloud Sync Project & Case Study Board")
-    st.write("Track deliverables by dragging status dropdowns. Changes persist instantly across devices!")
+    st.title("📋 Database Sync Project & Case Study Board")
+    st.write("Track deliverables by dragging status dropdowns. Changes persist instantly!")
     st.markdown("---")
     
     with st.expander("➕ Create New Project Task / Deadline"):
@@ -259,23 +285,16 @@ elif page == "📋 Project Board Tracker":
             submit_task = st.form_submit_button("Add Task to Board", type="primary")
             
             if submit_task and new_task_title:
-                new_task_row = pd.DataFrame([{
-                    "title": new_task_title,
-                    "priority": new_task_priority, 
-                    "status": "📋 To Do"
-                }])
-                updated_tasks = pd.concat([all_tasks, new_task_row], ignore_index=True)
-                if save_sheet_data("Tasks", updated_tasks):
-                    st.rerun()
+                add_task(new_task_title, new_task_priority, "📋 To Do")
+                st.rerun()
     
     st.markdown("### 🗺️ Project Board Columns")
     b_col1, b_col2, b_col3 = st.columns(3)
     
     def render_board_column(column_title, target_status, layout_column):
-        global all_tasks
         with layout_column:
             st.markdown(f"### {column_title}")
-            for idx, task in enumerate(user_tasks):
+            for task in user_tasks:
                 if task.get("status") == target_status:
                     with st.container():
                         st.markdown(f"**{task['title']}**")
@@ -283,21 +302,15 @@ elif page == "📋 Project Board Tracker":
                         
                         avail_statuses = ["📋 To Do", "⚡ In Progress", "✅ Done"]
                         curr_idx = avail_statuses.index(target_status) if target_status in avail_statuses else 0
-                        new_status = st.selectbox("Move status:", avail_statuses, key=f"status_{target_status}_{idx}", index=curr_idx)
+                        new_status = st.selectbox("Move status:", avail_statuses, key=f"status_{task['id']}", index=curr_idx)
                         
                         if new_status != task["status"]:
-                            matches = all_tasks[all_tasks["title"] == task["title"]].index
-                            if not matches.empty:
-                                all_tasks.at[matches[-1], "status"] = new_status
-                                if save_sheet_data("Tasks", all_tasks):
-                                    st.rerun()
+                            update_task_status(task['id'], new_status)
+                            st.rerun()
                         
-                        if st.button("🗑️ Drop Task", key=f"drop_{target_status}_{idx}", use_container_width=True):
-                            matches = all_tasks[all_tasks["title"] == task["title"]].index
-                            if not matches.empty:
-                                all_tasks = all_tasks.drop(matches[-1])
-                                if save_sheet_data("Tasks", all_tasks):
-                                    st.rerun()
+                        if st.button("🗑️ Drop Task", key=f"drop_{task['id']}", use_container_width=True):
+                            delete_task(task['id'])
+                            st.rerun()
                         st.markdown("---")
 
     render_board_column("🔴 TO DO", "📋 To Do", b_col1)
